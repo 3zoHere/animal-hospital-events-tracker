@@ -4,49 +4,105 @@ import requests
 from datetime import datetime, timezone
 
 
-# =========================
-# ANIMAL HOSPITAL
-# =========================
+# ============================================================
+# CONFIG
+# ============================================================
 
 UNIVERSE_ID = "10148749921"
 
+# Place ID of Animal Hospital
+PLACE_ID = "78515283254292"
+
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK"]
 
-
-# =========================
-# ROBLOX API
-# =========================
-
-API_URL = (
+EVENTS_API_URL = (
     "https://apis.roblox.com/virtual-events/v1/"
     f"universes/{UNIVERSE_ID}/virtual-events"
 )
 
-
-# =========================
-# STATE FILES
-# =========================
+THUMBNAIL_API_URL = (
+    "https://thumbnails.roblox.com/v1/games/icons"
+)
 
 EVENTS_STATE_FILE = "events_state.json"
 ALERTS_STATE_FILE = "alerts_state.json"
 
 
-# =========================
-# JSON FUNCTIONS
-# =========================
+# ============================================================
+# ANIMAL HOSPITAL IMAGE
+# ============================================================
+
+def get_game_thumbnail():
+
+    try:
+
+        response = requests.get(
+            THUMBNAIL_API_URL,
+            params={
+                "universeIds": UNIVERSE_ID,
+                "returnPolicy": "PlaceHolder",
+                "size": "512x512",
+                "format": "Png",
+                "isCircular": "false"
+            },
+            timeout=30
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        items = data.get(
+            "data",
+            []
+        )
+
+        if items:
+
+            image_url = items[0].get(
+                "imageUrl"
+            )
+
+            if image_url:
+                return image_url
+
+    except Exception as error:
+
+        print(
+            "Could not get game thumbnail:",
+            error
+        )
+
+    return None
+
+
+# ============================================================
+# JSON STORAGE
+# ============================================================
 
 def load_json(filename, default):
 
     if not os.path.exists(filename):
         return default
 
-    with open(
-        filename,
-        "r",
-        encoding="utf-8"
-    ) as f:
+    try:
 
-        return json.load(f)
+        with open(
+            filename,
+            "r",
+            encoding="utf-8"
+        ) as file:
+
+            return json.load(file)
+
+    except Exception as error:
+
+        print(
+            f"Could not read {filename}:",
+            error
+        )
+
+        return default
 
 
 def save_json(filename, data):
@@ -55,24 +111,23 @@ def save_json(filename, data):
         filename,
         "w",
         encoding="utf-8"
-    ) as f:
+    ) as file:
 
         json.dump(
             data,
-            f,
+            file,
             ensure_ascii=False,
             indent=2
         )
 
 
-# =========================
-# GET ROBLOX EVENTS
-# =========================
+# ============================================================
+# ROBLOX EVENTS
+# ============================================================
 
 def get_events():
 
     events = []
-
     cursor = ""
 
     while True:
@@ -83,7 +138,7 @@ def get_events():
             params["cursor"] = cursor
 
         response = requests.get(
-            API_URL,
+            EVENTS_API_URL,
             params=params,
             timeout=30
         )
@@ -109,9 +164,9 @@ def get_events():
     return events
 
 
-# =========================
+# ============================================================
 # TIME
-# =========================
+# ============================================================
 
 def parse_time(value):
 
@@ -126,34 +181,66 @@ def parse_time(value):
     )
 
 
-# =========================
-# SEND DISCORD
-# =========================
+def discord_timestamp(value):
 
-def send_to_discord(
-    event,
-    message
-):
+    parsed = parse_time(value)
 
-    event_id = event["id"]
+    if not parsed:
+        return None
 
-    title = (
+    return int(
+        parsed.timestamp()
+    )
+
+
+# ============================================================
+# EVENT DATA
+# ============================================================
+
+def event_title(event):
+
+    return (
         event.get("displayTitle")
         or event.get("title")
         or "Animal Hospital Event"
     )
 
-    subtitle = (
+
+def event_description(event):
+
+    return (
+        event.get("displayDescription")
+        or event.get("description")
+        or ""
+    )
+
+
+def event_subtitle(event):
+
+    return (
         event.get("displaySubtitle")
         or event.get("subtitle")
         or ""
     )
 
-    description = (
-        event.get("displayDescription")
-        or event.get("description")
-        or ""
-    )
+
+# ============================================================
+# DISCORD MESSAGE
+# ============================================================
+
+def send_to_discord(
+    event,
+    alert_type,
+    game_thumbnail
+):
+
+    event_id = event["id"]
+
+    title = event_title(event)
+
+    description = event_description(event)
+
+    subtitle = event_subtitle(event)
 
     event_time = event.get(
         "eventTime",
@@ -172,70 +259,192 @@ def send_to_discord(
         f"https://www.roblox.com/events/{event_id}"
     )
 
+    # --------------------------------------------------------
+    # STATUS
+    # --------------------------------------------------------
+
+    status = {
+
+        "new": {
+            "emoji": "🆕",
+            "title": "NEW EVENT DETECTED",
+            "color": 0x58A6FF
+        },
+
+        "1h": {
+            "emoji": "🟡",
+            "title": "EVENT IN 1 HOUR",
+            "color": 0xF1C40F
+        },
+
+        "15m": {
+            "emoji": "🟠",
+            "title": "EVENT IN 15 MINUTES",
+            "color": 0xE67E22
+        },
+
+        "start": {
+            "emoji": "🚨",
+            "title": "EVENT IS LIVE",
+            "color": 0xE74C3C
+        }
+    }
+
+    current = status.get(
+        alert_type,
+        status["new"]
+    )
+
+    # --------------------------------------------------------
+    # FIELDS
+    # --------------------------------------------------------
+
     fields = []
+
+    if start:
+
+        timestamp = discord_timestamp(
+            start
+        )
+
+        if timestamp:
+
+            fields.append({
+                "name": "🗓️ START",
+                "value": (
+                    f"<t:{timestamp}:F>\n"
+                    f"<t:{timestamp}:R>"
+                ),
+                "inline": True
+            })
+
+    if end:
+
+        timestamp = discord_timestamp(
+            end
+        )
+
+        if timestamp:
+
+            fields.append({
+                "name": "⏱️ END",
+                "value": (
+                    f"<t:{timestamp}:F>\n"
+                    f"<t:{timestamp}:R>"
+                ),
+                "inline": True
+            })
 
     if subtitle:
 
         fields.append({
-            "name": "Details",
+            "name": "📋 INFORMATION",
             "value": subtitle[:1024],
             "inline": False
         })
 
-    if start:
+    # --------------------------------------------------------
+    # DESCRIPTION
+    # --------------------------------------------------------
 
-        start_timestamp = int(
-            parse_time(
-                start
-            ).timestamp()
+    description_text = (
+        f"## {title}\n\n"
+    )
+
+    if description:
+
+        description_text += (
+            f"{description[:3000]}\n\n"
         )
 
-        fields.append({
-            "name": "Starts",
-            "value": (
-                f"<t:{start_timestamp}:F>"
-            ),
-            "inline": True
-        })
+    if alert_type == "start":
 
-    if end:
-
-        end_timestamp = int(
-            parse_time(
-                end
-            ).timestamp()
+        description_text += (
+            "🐾 **The event is happening now!**"
         )
 
-        fields.append({
-            "name": "Ends",
-            "value": (
-                f"<t:{end_timestamp}:F>"
-            ),
-            "inline": True
-        })
+    elif alert_type == "1h":
+
+        description_text += (
+            "🩺 **Prepare for the event.**"
+        )
+
+    elif alert_type == "15m":
+
+        description_text += (
+            "🚨 **Get ready! The event starts soon.**"
+        )
+
+    else:
+
+        description_text += (
+            "📋 **A new event has been detected.**"
+        )
+
+    # --------------------------------------------------------
+    # EMBED
+    # --------------------------------------------------------
 
     embed = {
 
-        "title": title,
+        "author": {
+            "name": (
+                "🏥 ANIMAL HOSPITAL"
+            )
+        },
+
+        "title": (
+            f"{current['emoji']} "
+            f"{current['title']}"
+        ),
 
         "url": event_url,
 
-        "description": (
-            description[:4096]
-        ),
+        "description": description_text,
+
+        "color": current["color"],
 
         "fields": fields,
 
         "footer": {
-            "text": "Animal Hospital (Anomaly)"
-        }
+            "text": (
+                "Animal Hospital (Anomaly) • "
+                "Roblox Event Monitor"
+            )
+        },
+
+        "timestamp": (
+            datetime.now(
+                timezone.utc
+            ).isoformat()
+        )
     }
+
+    # --------------------------------------------------------
+    # GAME IMAGE
+    # --------------------------------------------------------
+
+    if game_thumbnail:
+
+        embed["thumbnail"] = {
+            "url": game_thumbnail
+        }
+
+    # --------------------------------------------------------
+    # DISCORD PAYLOAD
+    # --------------------------------------------------------
 
     payload = {
 
-        "username": "Animal Hospital",
+        "username": (
+            "🏥 Animal Hospital"
+        ),
 
-        "content": message,
+        "content": (
+            f"🏥 **ANIMAL HOSPITAL**\n"
+            f"{current['emoji']} "
+            f"**{current['title']}**"
+        ),
 
         "embeds": [
             embed
@@ -251,88 +460,131 @@ def send_to_discord(
     response.raise_for_status()
 
     print(
-        "Discord message sent successfully."
+        f"Discord notification sent: "
+        f"{alert_type} | {event_id}"
     )
 
 
-# =========================
-# NEW EVENT
-# =========================
+# ============================================================
+# NEW EVENTS
+# ============================================================
 
-def send_new_event(event):
-
-    title = (
-        event.get("displayTitle")
-        or event.get("title")
-        or "New Event"
-    )
-
-    send_to_discord(
-
-        event,
-
-        (
-            "📢 **NEW EVENT!**\n"
-            f"**{title}**"
-        )
-    )
-
-    print(
-        f"New event announced: {event['id']}"
-    )
-
-
-# =========================
-# ALERTS
-# =========================
-
-def send_alert(
-    event,
-    alert_type
+def check_new_events(
+    events,
+    events_state,
+    game_thumbnail
 ):
 
-    title = (
-        event.get("displayTitle")
-        or event.get("title")
-        or "Animal Hospital Event"
-    )
+    current_ids = {
 
-    messages = {
+        str(event["id"])
 
-        "1h": (
-            "🟡 **EVENT STARTING IN 1 HOUR!**\n"
-            f"**{title}**"
-        ),
+        for event in events
 
-        "15m": (
-            "🟠 **EVENT STARTING IN 15 MINUTES!**\n"
-            f"**{title}**"
-        ),
-
-        "start": (
-            "🔴 **EVENT IS LIVE NOW!**\n"
-            f"**{title}**"
-        )
     }
 
-    send_to_discord(
-        event,
-        messages[alert_type]
+    # --------------------------------------------------------
+    # FIRST RUN
+    # --------------------------------------------------------
+
+    if events_state is None:
+
+        save_json(
+
+            EVENTS_STATE_FILE,
+
+            {
+                "event_ids": sorted(
+                    current_ids
+                )
+            }
+
+        )
+
+        print(
+            f"First run: saved "
+            f"{len(current_ids)} existing events."
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # OLD EVENTS
+    # --------------------------------------------------------
+
+    old_ids = set(
+
+        events_state.get(
+            "event_ids",
+            []
+        )
+
     )
+
+    # --------------------------------------------------------
+    # NEW EVENTS
+    # --------------------------------------------------------
+
+    new_events = [
+
+        event
+
+        for event in events
+
+        if str(event["id"])
+        not in old_ids
+
+    ]
+
+    new_events.sort(
+
+        key=lambda event:
+
+        event.get(
+            "createdUtc",
+            ""
+        )
+
+    )
+
+    for event in new_events:
+
+        send_to_discord(
+            event,
+            "new",
+            game_thumbnail
+        )
 
     print(
-        f"Sent {alert_type} alert "
-        f"for event {event['id']}"
+        f"New events: "
+        f"{len(new_events)}"
+    )
+
+    # --------------------------------------------------------
+    # SAVE
+    # --------------------------------------------------------
+
+    save_json(
+
+        EVENTS_STATE_FILE,
+
+        {
+            "event_ids": sorted(
+                current_ids
+            )
+        }
+
     )
 
 
-# =========================
-# CHECK ALERTS
-# =========================
+# ============================================================
+# ALERT SYSTEM
+# ============================================================
 
 def check_alerts(
     events,
-    alerts_state
+    alerts_state,
+    game_thumbnail
 ):
 
     now = datetime.now(
@@ -365,7 +617,7 @@ def check_alerts(
         if not start:
             continue
 
-        # Ignore ended events
+        # Ignore finished events
 
         if end and now >= end:
             continue
@@ -374,22 +626,21 @@ def check_alerts(
 
             alerts_state[event_id] = []
 
-        sent_alerts = (
-            alerts_state[event_id]
-        )
+        sent = alerts_state[
+            event_id
+        ]
 
         seconds_until_start = (
             start - now
         ).total_seconds()
 
-
-        # =====================
+        # ----------------------------------------------------
         # 1 HOUR
-        # =====================
+        # ----------------------------------------------------
 
         if (
 
-            "1h" not in sent_alerts
+            "1h" not in sent
 
             and
 
@@ -397,23 +648,23 @@ def check_alerts(
 
         ):
 
-            send_alert(
+            send_to_discord(
                 event,
+                "1h",
+                game_thumbnail
+            )
+
+            sent.append(
                 "1h"
             )
 
-            sent_alerts.append(
-                "1h"
-            )
-
-
-        # =====================
+        # ----------------------------------------------------
         # 15 MINUTES
-        # =====================
+        # ----------------------------------------------------
 
         if (
 
-            "15m" not in sent_alerts
+            "15m" not in sent
 
             and
 
@@ -421,23 +672,23 @@ def check_alerts(
 
         ):
 
-            send_alert(
+            send_to_discord(
                 event,
+                "15m",
+                game_thumbnail
+            )
+
+            sent.append(
                 "15m"
             )
 
-            sent_alerts.append(
-                "15m"
-            )
-
-
-        # =====================
-        # START
-        # =====================
+        # ----------------------------------------------------
+        # LIVE
+        # ----------------------------------------------------
 
         if (
 
-            "start" not in sent_alerts
+            "start" not in sent
 
             and
 
@@ -445,33 +696,72 @@ def check_alerts(
 
         ):
 
-            send_alert(
+            send_to_discord(
                 event,
-                "start"
+                "start",
+                game_thumbnail
             )
 
-            sent_alerts.append(
+            sent.append(
                 "start"
             )
 
     return alerts_state
 
 
-# =========================
+# ============================================================
 # MAIN
-# =========================
+# ============================================================
 
 def main():
 
     print(
-        "Checking Animal Hospital events..."
+        "========================================"
     )
+
+    print(
+        "🏥 ANIMAL HOSPITAL EVENT MONITOR"
+    )
+
+    print(
+        "========================================"
+    )
+
+    print(
+        f"Universe: {UNIVERSE_ID}"
+    )
+
+    # --------------------------------------------------------
+    # Game thumbnail
+    # --------------------------------------------------------
+
+    game_thumbnail = get_game_thumbnail()
+
+    if game_thumbnail:
+
+        print(
+            "Game thumbnail: FOUND"
+        )
+
+    else:
+
+        print(
+            "Game thumbnail: NOT FOUND"
+        )
+
+    # --------------------------------------------------------
+    # Events
+    # --------------------------------------------------------
 
     events = get_events()
 
     print(
-        f"Found {len(events)} events."
+        f"Events found: {len(events)}"
     )
+
+    # --------------------------------------------------------
+    # State
+    # --------------------------------------------------------
 
     events_state = load_json(
         EVENTS_STATE_FILE,
@@ -483,125 +773,47 @@ def main():
         {}
     )
 
-    current_ids = {
+    # --------------------------------------------------------
+    # New events
+    # --------------------------------------------------------
 
-        str(event["id"])
+    check_new_events(
+        events,
+        events_state,
+        game_thumbnail
+    )
 
-        for event in events
-
-    }
-
-
-    # =========================
-    # NEW EVENTS
-    # =========================
-
-    if events_state is None:
-
-        save_json(
-
-            EVENTS_STATE_FILE,
-
-            {
-                "event_ids": sorted(
-                    current_ids
-                )
-            }
-
-        )
-
-        print(
-            "First run: "
-            "existing events saved."
-        )
-
-    else:
-
-        old_ids = set(
-
-            events_state.get(
-                "event_ids",
-                []
-            )
-
-        )
-
-        new_events = [
-
-            event
-
-            for event in events
-
-            if str(event["id"])
-            not in old_ids
-
-        ]
-
-        new_events.sort(
-
-            key=lambda event:
-
-            event.get(
-                "createdUtc",
-                ""
-            )
-
-        )
-
-        for event in new_events:
-
-            send_new_event(
-                event
-            )
-
-        save_json(
-
-            EVENTS_STATE_FILE,
-
-            {
-                "event_ids": sorted(
-                    current_ids
-                )
-            }
-
-        )
-
-        print(
-            "New events announced: "
-            f"{len(new_events)}"
-        )
-
-
-    # =========================
-    # ALERTS
-    # =========================
+    # --------------------------------------------------------
+    # Alerts
+    # --------------------------------------------------------
 
     alerts_state = check_alerts(
-
         events,
-
-        alerts_state
-
+        alerts_state,
+        game_thumbnail
     )
 
     save_json(
-
         ALERTS_STATE_FILE,
-
         alerts_state
-
     )
 
     print(
-        "Animal Hospital "
-        "event check completed."
+        "========================================"
+    )
+
+    print(
+        "✅ CHECK COMPLETED"
+    )
+
+    print(
+        "========================================"
     )
 
 
-# =========================
+# ============================================================
 # RUN
-# =========================
+# ============================================================
 
 if __name__ == "__main__":
-
     main()
